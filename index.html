@@ -181,7 +181,11 @@ tr:last-child td{border-bottom:0}
 <div class="modal"><h3 id="modalTitle">เพิ่มนักเรียน</h3><div class="field" style="margin-bottom:10px"><label>คำนำหน้า</label><input id="mPrefix"></div><div class="field" style="margin-bottom:10px"><label>ชื่อ</label><input id="mFirst"></div><div class="field" style="margin-bottom:10px"><label>นามสกุล</label><input id="mLast"></div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><div class="field"><label>ระดับชั้น</label><select id="mGrade"></select></div><div class="field"><label>ห้อง</label><input id="mRoom"></div></div><div class="modal-footer"><button class="btn btn-muted" id="closeModal">ยกเลิก</button><button class="btn btn-primary" id="saveStudent">บันทึก</button></div></div></div>
 <div class="toast" id="toast"></div>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
+const SUPABASE_URL = 'YOUR_SUPABASE_URL';
+const SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY';
+const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const STORAGE_KEY='hongson_breakfast_attendance_v2';
 const STUDENT_KEY='hongson_breakfast_students_v1';
 const rawStudents=[
@@ -217,8 +221,34 @@ function thaiDate(s){if(!s)return '';const d=new Date(s+'T00:00:00');return d.to
 function nowThai(){return new Date().toLocaleString('th-TH',{dateStyle:'short',timeStyle:'short'})}
 function uid(){return 's_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,7)}
 function showToast(msg){$('toast').textContent=msg;$('toast').classList.add('show');setTimeout(()=>$('toast').classList.remove('show'),2500)}
-function save(){localStorage.setItem(STORAGE_KEY,JSON.stringify(attendance));localStorage.setItem(STUDENT_KEY,JSON.stringify(students))}
-function load(){try{attendance=JSON.parse(localStorage.getItem(STORAGE_KEY)||'{}')}catch{attendance={}};const saved=localStorage.getItem(STUDENT_KEY);if(saved){try{students=JSON.parse(saved)}catch{students=[]}};if(!students.length){students=rawStudents.map((x,i)=>({id:'initial_'+i,grade:x[0],room:x[1],name:x[2],active:true}));save()}}
+async function loadCloud(){
+  if(SUPABASE_URL.includes('https://nqevpjkajpxhylbghuul.supabase.co')||SUPABASE_ANON_KEY.includes('sb_publishable_4P6fCVVOEfh4ifrI0lGz4Q_EIuaXhum')){
+    throw new Error('ยังไม่ได้ตั้งค่า Supabase URL / Anon Key');
+  }
+  const {data: studentRows,error: studentError}=await supabaseClient.from('students').select('*').order('grade').order('room').order('name');
+  if(studentError) throw studentError;
+  students=(studentRows||[]).map(s=>({id:s.id,grade:s.grade,room:s.room,name:s.name,active:s.active!==false}));
+  if(!students.length){
+    const seed=rawStudents.map((x,i)=>({id:'initial_'+i,grade:x[0],room:x[1],name:x[2],active:true}));
+    const {error}=await supabaseClient.from('students').insert(seed);
+    if(error) throw error;
+    students=seed;
+  }
+  const {data: records,error: recordError}=await supabaseClient.from('breakfast_records').select('student_id,date,status,updated_at,source');
+  if(recordError) throw recordError;
+  attendance={};
+  (records||[]).forEach(r=>{attendance[key(r.date,r.student_id)]={status:r.status,updatedAt:r.updated_at,source:r.source||'student'}});
+}
+async function upsertStudentCloud(s){
+  const {error}=await supabaseClient.from('students').upsert({id:s.id,grade:s.grade,room:s.room,name:s.name,active:s.active!==false});
+  if(error) throw error;
+}
+async function saveAttendanceCloud(date,id,status){
+  const updatedAt=new Date().toISOString();
+  const {error}=await supabaseClient.from('breakfast_records').upsert({student_id:id,date,status,updated_at:updatedAt,source:currentRole||'student'},{onConflict:'student_id,date'});
+  if(error) throw error;
+  attendance[key(date,id)]={status,updatedAt,source:currentRole||'student'};
+}
 function grades(){return [...new Set(students.filter(s=>s.active).map(s=>s.grade))].sort((a,b)=>Number(a.replace(/\D/g,''))-Number(b.replace(/\D/g,'')))}
 function rooms(grade){return [...new Set(students.filter(s=>s.active&&(!grade||s.grade===grade)).map(s=>s.room))].sort((a,b)=>Number(a)-Number(b))}
 function fillGrades(select,allLabel='เลือกชั้น'){select.innerHTML=`<option value="">${allLabel}</option>`+grades().map(g=>`<option value="${g}">${g}</option>`).join('')}
@@ -267,8 +297,11 @@ function renderSelfStatus(){
  if(rec?.status==='กิน'){$('selfStatus').innerHTML=`<div class="checked-box" style="margin:18px 0"><i class="fa-solid fa-circle-check"></i> บันทึกแล้ว • ${s?escapeHtml(s.name):''}<br><small>เวลา ${new Date(rec.updatedAt).toLocaleTimeString('th-TH',{hour:'2-digit',minute:'2-digit'})}</small></div>`;$('selfSave').disabled=true;$('selfSave').innerHTML='<i class="fa-solid fa-check"></i> วันนี้เช็กแล้ว';}
  else{$('selfStatus').innerHTML='';$('selfSave').disabled=false;$('selfSave').innerHTML='<i class="fa-solid fa-check"></i> ฉันกินอาหารเช้าแล้ว'}
 }
-function studentSaveSelf(){
- const id=$('selfStudent').value;if(!id)return;setStatus(today(),id,'กิน');save();renderSelfStatus();renderWho();showToast('บันทึกการกินอาหารเช้าของคุณเรียบร้อย');
+async function studentSaveSelf(){
+ const id=$('selfStudent').value;if(!id)return;
+ $('selfSave').disabled=true;
+ try{await saveAttendanceCloud(today(),id,'กิน');renderSelfStatus();renderWho();showToast('บันทึกการกินอาหารเช้าของคุณเรียบร้อย');}
+ catch(e){console.error(e);$('selfSave').disabled=false;showToast('บันทึกไม่สำเร็จ กรุณาตรวจสอบ Supabase');}
 }
 function renderWho(){
  const date=$('whoDate').value,g=$('whoGrade').value,r=$('whoRoom').value,list=students.filter(s=>s.active&&s.grade&&( !g||s.grade===g)&&(!r||s.room===r)&&getStatus(date,s.id)==='กิน');
@@ -284,24 +317,25 @@ function refreshStudent(){
  $('selfRoom').innerHTML='<option value="">เลือกห้อง</option>';$('selfStudent').innerHTML='<option value="">เลือกชื่อของคุณ</option>';renderSelfStatus();renderWho();
 }
 window.editStudent=id=>{const s=students.find(x=>x.id===id);if(!s)return;editId=id;$('modalTitle').textContent='แก้ไขข้อมูลนักเรียน';const m=s.name.match(/^(เด็กชาย|เด็กหญิง|นาย|นางสาว|นาง)\s*(.*)$/),rest=m?m[2]:s.name,parts=rest.trim().split(/\s+/);$('mPrefix').value=m?m[1]:'';$('mFirst').value=parts.shift()||'';$('mLast').value=parts.join(' ');fillGrades($('mGrade'),'เลือกชั้น');$('mGrade').value=s.grade;$('mRoom').value=s.room;$('studentModal').classList.add('show')}
-window.removeStudent=id=>{const s=students.find(x=>x.id===id);if(s&&confirm(`ต้องการปิดการใช้งาน "${s.name}" หรือไม่?`)){s.active=false;save();renderStudents();refreshTeacher();showToast('ปิดการใช้งานนักเรียนแล้ว')}}
+window.removeStudent=async id=>{const s=students.find(x=>x.id===id);if(s&&confirm(`ต้องการปิดการใช้งาน "${s.name}" หรือไม่?`)){try{s.active=false;await upsertStudentCloud(s);renderStudents();refreshTeacher();showToast('ปิดการใช้งานนักเรียนแล้ว')}catch(e){s.active=true;console.error(e);showToast('บันทึกไม่สำเร็จ')}}}
 function openAdd(){editId=null;$('modalTitle').textContent='เพิ่มนักเรียน';$('mPrefix').value='';$('mFirst').value='';$('mLast').value='';$('mRoom').value='';fillGrades($('mGrade'),'เลือกชั้น');$('studentModal').classList.add('show')}
-function saveStudent(){const p=$('mPrefix').value.trim(),f=$('mFirst').value.trim(),l=$('mLast').value.trim(),g=$('mGrade').value,r=$('mRoom').value.trim();if(!f||!g||!r){showToast('กรุณากรอกข้อมูลให้ครบ');return}const name=[p,f,l].filter(Boolean).join(' ');if(editId){Object.assign(students.find(s=>s.id===editId),{name,grade:g,room:r,active:true})}else students.push({id:uid(),name,grade:g,room:r,active:true});save();$('studentModal').classList.remove('show');refreshTeacher();refreshStudent();showToast('บันทึกข้อมูลนักเรียนเรียบร้อย')}
+async function saveStudent(){const p=$('mPrefix').value.trim(),f=$('mFirst').value.trim(),l=$('mLast').value.trim(),g=$('mGrade').value,r=$('mRoom').value.trim();if(!f||!g||!r){showToast('กรุณากรอกข้อมูลให้ครบ');return}const name=[p,f,l].filter(Boolean).join(' ');let s;if(editId){s=students.find(s=>s.id===editId);Object.assign(s,{name,grade:g,room:r,active:true})}else{s={id:uid(),name,grade:g,room:r,active:true};students.push(s)}try{await upsertStudentCloud(s);$('studentModal').classList.remove('show');refreshTeacher();refreshStudent();showToast('บันทึกข้อมูลนักเรียนเรียบร้อย')}catch(e){console.error(e);if(!editId)students=students.filter(x=>x.id!==s.id);showToast('บันทึกไม่สำเร็จ กรุณาตรวจสอบ Supabase')}}
 function exportBackup(){const data={version:2,exportedAt:new Date().toISOString(),students,attendance};const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`สำรองข้อมูลอาหารเช้า_${today()}.json`;a.click();URL.revokeObjectURL(a.href);showToast('สำรองข้อมูลเรียบร้อย')}
-function restoreBackup(file){const r=new FileReader();r.onload=e=>{try{const d=JSON.parse(e.target.result);if(!Array.isArray(d.students)||typeof d.attendance!=='object')throw Error();students=d.students;attendance=d.attendance;save();refreshTeacher();refreshStudent();showToast('นำเข้าข้อมูลเรียบร้อย')}catch{showToast('ไฟล์สำรองไม่ถูกต้อง')}};r.readAsText(file)}
-function exportCSV(){const rows=[['วันที่','ระดับชั้น','ห้อง','ชื่อ-สกุล','สถานะ','เวลาบันทึก']];Object.entries(attendance).forEach(([k,v])=>{const [date,id]=k.split('__'),s=students.find(x=>x.id===id);if(s&&v.status)rows.push([date,s.grade,s.room,s.name,v.status,new Date(v.updatedAt).toLocaleString('th-TH')])});const csv='\ufeff'+rows.map(r=>r.map(x=>`"${String(x).replace(/"/g,'""')}"`).join(',')).join('\n'),blob=new Blob([csv],{type:'text/csv;charset=utf-8'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`ประวัติอาหารเช้า_${today()}.csv`;a.click();URL.revokeObjectURL(a.href)}
-function init(){
- load();
- document.querySelectorAll('#teacherApp .nav-btn').forEach(b=>b.onclick=()=>showPage(b.dataset.page));
- document.querySelectorAll('#studentApp .nav-btn').forEach(b=>b.onclick=()=>showStudentPage(b.dataset.spage));
- $('dailyDate').onchange=renderDaily;$('dailyGrade').onchange=()=>{fillRooms($('dailyRoom'),$('dailyGrade').value,'ทุกห้อง');renderDaily()};$('dailyRoom').onchange=renderDaily;
- $('overviewDate').onchange=renderOverview;$('studentSearch').oninput=renderStats;$('manageSearch').oninput=renderStudents;
- $('backupBtn').onclick=exportBackup;$('restoreBtn').onclick=()=>$('restoreFile').click();$('restoreFile').onchange=e=>e.target.files[0]&&restoreBackup(e.target.files[0]);
- $('addStudentBtn').onclick=openAdd;$('closeModal').onclick=()=>$('studentModal').classList.remove('show');$('saveStudent').onclick=saveStudent;
- $('selfGrade').onchange=()=>{$('selfRoom').disabled=!$('selfGrade').value;fillRooms($('selfRoom'),$('selfGrade').value,'เลือกห้อง');$('selfStudent').innerHTML='<option value="">เลือกชื่อของคุณ</option>';$('selfStudent').disabled=true;renderSelfStatus()};
- $('selfRoom').onchange=()=>{fillStudents($('selfStudent'),$('selfGrade').value,$('selfRoom').value);$('selfStudent').disabled=!$('selfRoom').value;renderSelfStatus()};
- $('selfStudent').onchange=renderSelfStatus;$('selfSave').onclick=studentSaveSelf;
- $('whoDate').onchange=renderWho;$('whoGrade').onchange=()=>{fillRooms($('whoRoom'),$('whoGrade').value,'ทุกห้อง');renderWho()};$('whoRoom').onchange=renderWho;
+async function restoreBackup(file){const r=new FileReader();r.onload=async e=>{try{const d=JSON.parse(e.target.result);if(!Array.isArray(d.students)||typeof d.attendance!=='object')throw Error();for(const s of d.students)await upsertStudentCloud(s);const records=Object.entries(d.attendance).map(([k,v])=>{const [date,id]=k.split('__');return {student_id:id,date,status:v.status,updated_at:v.updatedAt||new Date().toISOString(),source:v.source||'restore'}}).filter(x=>x.status);if(records.length){const {error}=await supabaseClient.from('breakfast_records').upsert(records,{onConflict:'student_id,date'});if(error)throw error}await loadCloud();refreshTeacher();refreshStudent();showToast('นำเข้าข้อมูลเรียบร้อย')}catch(err){console.error(err);showToast('นำเข้าข้อมูลไม่สำเร็จ')}};r.readAsText(file)}
+
+async function init(){
+  try{await loadCloud();}
+  catch(e){console.error(e);showToast(e.message||'เชื่อมต่อฐานข้อมูลไม่สำเร็จ');return}
+  document.querySelectorAll('#teacherApp .nav-btn').forEach(b=>b.onclick=()=>showPage(b.dataset.page));
+  document.querySelectorAll('#studentApp .nav-btn').forEach(b=>b.onclick=()=>showStudentPage(b.dataset.spage));
+  $('dailyDate').onchange=renderDaily;$('dailyGrade').onchange=()=>{fillRooms($('dailyRoom'),$('dailyGrade').value,'ทุกห้อง');renderDaily()};$('dailyRoom').onchange=renderDaily;
+  $('overviewDate').onchange=renderOverview;$('studentSearch').oninput=renderStats;$('manageSearch').oninput=renderStudents;
+  $('backupBtn').onclick=exportBackup;$('restoreBtn').onclick=()=>$('restoreFile').click();$('restoreFile').onchange=e=>e.target.files[0]&&restoreBackup(e.target.files[0]);
+  $('addStudentBtn').onclick=openAdd;$('closeModal').onclick=()=>$('studentModal').classList.remove('show');$('saveStudent').onclick=saveStudent;
+  $('selfGrade').onchange=()=>{$('selfRoom').disabled=!$('selfGrade').value;fillRooms($('selfRoom'),$('selfGrade').value,'เลือกห้อง');$('selfStudent').innerHTML='<option value="">เลือกชื่อของคุณ</option>';$('selfStudent').disabled=true;renderSelfStatus()};
+  $('selfRoom').onchange=()=>{fillStudents($('selfStudent'),$('selfGrade').value,$('selfRoom').value);$('selfStudent').disabled=!$('selfRoom').value;renderSelfStatus()};
+  $('selfStudent').onchange=renderSelfStatus;$('selfSave').onclick=studentSaveSelf;
+  $('whoDate').onchange=renderWho;$('whoGrade').onchange=()=>{fillRooms($('whoRoom'),$('whoGrade').value,'ทุกห้อง');renderWho()};$('whoRoom').onchange=renderWho;
 }
 init();
 </script>
