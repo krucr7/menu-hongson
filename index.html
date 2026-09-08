@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="th">
 <head>
+<link rel="icon" type="image/png" href="hongsonlogo.png">
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ระบบเช็คการกินอาหารเช้านักเรียนหอพัก</title>
@@ -283,13 +284,52 @@ function setStatus(date,id,status){attendance[key(date,id)]={status,updatedAt:ne
 function escapeHtml(x){return String(x).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]))}
 
 window.enterRole=function(role){
- currentRole=role;$('roleScreen').style.display='none';$('teacherApp').style.display=role==='teacher'?'block':'none';$('studentApp').style.display=role==='student'?'block':'none';
- if(role==='teacher'){document.title='ระบบเช็คการกินอาหารเช้านักเรียนหอพัก | ครู';$('headerDate').textContent=thaiDate(today());refreshTeacher();showPage('daily')}
- else{document.title='เช็กอาหารเช้าของฉัน | นักเรียน';$('studentHeaderDate').textContent=thaiDate(today());refreshStudent();showStudentPage('self')}
+ currentRole=role;
+ localStorage.setItem('currentRole',role);
+ $('roleScreen').style.display='none';
+ $('teacherApp').style.display=role==='teacher'?'block':'none';
+ $('studentApp').style.display=role==='student'?'block':'none';
+
+ if(role==='teacher'){
+   document.title='ระบบเช็คการกินอาหารเช้านักเรียนหอพัก | ครู';
+   $('headerDate').textContent=thaiDate(today());
+   refreshTeacher();
+   showPage(localStorage.getItem('teacherPage')||'daily');
+ }else{
+   document.title='เช็กอาหารเช้าของฉัน | นักเรียน';
+   $('studentHeaderDate').textContent=thaiDate(today());
+   refreshStudent();
+   showStudentPage(localStorage.getItem('studentPage')||'self');
+ }
 }
-window.backToRoles=function(){currentRole=null;$('teacherApp').style.display='none';$('studentApp').style.display='none';$('roleScreen').style.display='flex'}
-function showPage(page){localStorage.setItem('teacherPage',page);if(location.hash!==('#'+page)){history.replaceState(null,'','#'+page)}document.querySelectorAll('#teacherApp .nav-btn').forEach(x=>x.classList.toggle('active',x.dataset.page===page));document.querySelectorAll('#teacherApp .page').forEach(x=>x.classList.toggle('active',x.id==='page-'+page));if(page==='daily')renderDaily();if(page==='stats')renderStats();if(page==='students')renderStudents();if(page==='overview')renderOverview()}
-function showStudentPage(page){localStorage.setItem('studentPage',page);document.querySelectorAll('#studentApp .nav-btn').forEach(x=>x.classList.toggle('active',x.dataset.spage===page));document.querySelectorAll('#studentApp .page').forEach(x=>x.classList.toggle('active',x.id==='spage-'+page));if(page==='self')renderSelfStatus();if(page==='who')renderWho()}
+
+window.backToRoles=function(){
+ currentRole=null;
+ localStorage.removeItem('currentRole');
+ history.replaceState(null,'',location.pathname+location.search);
+ $('teacherApp').style.display='none';
+ $('studentApp').style.display='none';
+ $('roleScreen').style.display='flex';
+}
+
+function showPage(page){
+ localStorage.setItem('teacherPage',page);
+ if(location.hash!==('#'+page)){history.replaceState(null,'','#'+page)}
+ document.querySelectorAll('#teacherApp .nav-btn').forEach(x=>x.classList.toggle('active',x.dataset.page===page));
+ document.querySelectorAll('#teacherApp .page').forEach(x=>x.classList.toggle('active',x.id==='page-'+page));
+ if(page==='daily')renderDaily();
+ if(page==='stats')renderStats();
+ if(page==='students')renderStudents();
+ if(page==='overview')renderOverview();
+}
+
+function showStudentPage(page){
+ localStorage.setItem('studentPage',page);
+ document.querySelectorAll('#studentApp .nav-btn').forEach(x=>x.classList.toggle('active',x.dataset.spage===page));
+ document.querySelectorAll('#studentApp .page').forEach(x=>x.classList.toggle('active',x.id==='spage-'+page));
+ if(page==='self')renderSelfStatus();
+ if(page==='who')renderWho();
+}
 
 function renderDaily(){
  const date=$('dailyDate').value,g=$('dailyGrade').value,r=$('dailyRoom').value,list=students.filter(s=>s.active&&(!g||s.grade===g)&&(!r||s.room===r));
@@ -348,17 +388,48 @@ async function restoreBackup(file){const r=new FileReader();r.onload=async e=>{t
     setupRealtime();refreshTeacher();refreshStudent();showToast('นำเข้าข้อมูลเรียบร้อย')}catch(err){console.error(err);showToast('นำเข้าข้อมูลไม่สำเร็จ')}};r.readAsText(file)}
 
 
+let realtimeChannel=null;
+let realtimeRefreshing=false;
+
 function setupRealtime(){
  try{
-  supabaseClient.channel('breakfast-realtime')
+  if(realtimeChannel) return;
+
+  realtimeChannel=supabaseClient.channel('breakfast-realtime')
    .on('postgres_changes',{event:'*',schema:'public',table:'students'},async()=>{
-      await loadCloud();refreshTeacher();refreshStudent();showToast('ข้อมูลนักเรียนอัปเดตแล้ว');
+      if(realtimeRefreshing) return;
+      realtimeRefreshing=true;
+      try{
+        await loadCloud();
+        refreshTeacher();
+        refreshStudent();
+        showToast('ข้อมูลนักเรียนอัปเดตแล้ว');
+      }catch(err){
+        console.error('Realtime students refresh error:',err);
+      }finally{
+        realtimeRefreshing=false;
+      }
    })
    .on('postgres_changes',{event:'*',schema:'public',table:'breakfast_records'},async()=>{
-      await loadCloud();refreshTeacher();refreshStudent();showToast('มีข้อมูลการเช็กอาหารใหม่');
+      if(realtimeRefreshing) return;
+      realtimeRefreshing=true;
+      try{
+        await loadCloud();
+        refreshTeacher();
+        refreshStudent();
+        showToast('มีข้อมูลการเช็กอาหารใหม่');
+      }catch(err){
+        console.error('Realtime breakfast refresh error:',err);
+      }finally{
+        realtimeRefreshing=false;
+      }
    })
-   .subscribe();
- }catch(err){console.error(err)}
+   .subscribe((status)=>{
+      console.log('Supabase Realtime:',status);
+   });
+ }catch(err){
+  console.error('Realtime setup error:',err);
+ }
 }
 
 async function init(){
@@ -369,8 +440,31 @@ async function init(){
     showToast('เชื่อมต่อ Supabase ไม่สำเร็จ: '+(e.message||'ตรวจสอบตารางและ RLS'));
     return;
   }
-  const startPage=(location.hash||'#'+(localStorage.getItem('teacherPage')||'daily')).replace('#','');showPage(startPage);const startStudent=(localStorage.getItem('studentPage')||'self');showStudentPage(startStudent);document.querySelectorAll('#teacherApp .nav-btn').forEach(b=>b.onclick=()=>showPage(b.dataset.page));
+  setupRealtime();
+
+  const savedRole=localStorage.getItem('currentRole');
+  if(savedRole==='teacher' || savedRole==='student'){
+    enterRole(savedRole);
+    if(savedRole==='teacher'){
+      const startPage=(location.hash ? location.hash.substring(1) : (localStorage.getItem('teacherPage')||'daily'));
+      showPage(startPage);
+    }else{
+      showStudentPage(localStorage.getItem('studentPage')||'self');
+    }
+  }else{
+    $('roleScreen').style.display='flex';
+    $('teacherApp').style.display='none';
+    $('studentApp').style.display='none';
+  }
+
+  document.querySelectorAll('#teacherApp .nav-btn').forEach(b=>b.onclick=()=>showPage(b.dataset.page));
   document.querySelectorAll('#studentApp .nav-btn').forEach(b=>b.onclick=()=>showStudentPage(b.dataset.spage));
+  window.addEventListener('hashchange',()=>{
+    if(currentRole==='teacher'){
+      const page=location.hash.substring(1);
+      if(page) showPage(page);
+    }
+  });
   $('dailyDate').onchange=renderDaily;$('dailyGrade').onchange=()=>{fillRooms($('dailyRoom'),$('dailyGrade').value,'ทุกห้อง');renderDaily()};$('dailyRoom').onchange=renderDaily;
   $('overviewDate').onchange=renderOverview;$('studentSearch').oninput=renderStats;$('manageSearch').oninput=renderStudents;
   $('backupBtn').onclick=exportBackup;$('restoreBtn').onclick=()=>$('restoreFile').click();$('restoreFile').onchange=e=>e.target.files[0]&&restoreBackup(e.target.files[0]);
