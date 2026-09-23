@@ -49,3 +49,11 @@ create policy breakfast_update_public
   to anon, authenticated
   using (true)
   with check (status = 'กิน' and meal in ('เช้า','เย็น'));
+
+
+drop policy if exists breakfast_delete_public on public.breakfast_records;
+
+create policy breakfast_delete_public
+  on public.breakfast_records for delete
+  to anon, authenticated
+  using (true);
